@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>RAT</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<style>
+body {
+  margin: 0;
+  background: #000;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  touch-action: manipulation;
+}
+canvas {
+  display: block;
+}
+</style>
+</head>
+<body>
+
+<!-- ================= AUDIO ================= -->
+<audio id="music" src="rat.mp3" loop></audio>
+
+<canvas id="game" width="360" height="640"></canvas>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const music = document.getElementById("music");
+
+// ================= GAME STATE =================
+let gameState = "menu"; // menu | play | gameover
+
+// ================= SAVE =================
+let save = JSON.parse(localStorage.getItem("ratSave")) || {
+  hoodie: 0,
+  board: 0
+};
+
+// ================= COSMETICS =================
+const hoodies = ["#2c2f3a", "#8b2cff", "#ff3b6f"];
+const boards  = ["#111", "#ffcc00", "#6fd3ff"];
+
+// ================= AUDIO FX =================
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function sound(freq, dur = 0.08) {
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.connect(g); g.connect(audioCtx.destination);
+  o.frequency.value = freq;
+  o.start();
+  g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + dur);
+  o.stop(audioCtx.currentTime + dur);
+}
+const vibrate = ms => navigator.vibrate && navigator.vibrate(ms);
+
+// ================= GAME CORE =================
+const gravity = 0.55;
+let speed = 4;
+let score = 0;
+let distance = 0;
+let gameOver = false;
+
+// ================= FLOW =================
+let flow = 0;
+const maxFlow = 100;
+let flowMult = 1;
+
+// ================= THEMES =================
+const themes = [
+  { sky:["#5cc8ff","#c9f2ff"], city:"#2b3a67", windows:"#6fa8ff", rain:false },
+  { sky:["#ff8c42","#ffd6a5"], city:"#3a234d", windows:"#ffcc66", rain:false },
+  { sky:["#0b1026","#1b2a55"], city:"#111833", windows:"#8fd3ff", rain:false },
+  { sky:["#060b1c","#141c3d"], city:"#0a0f22", windows:"#9ad9ff", rain:true }
+];
+function currentTheme() {
+  return themes[Math.floor(distance / 3000) % themes.length];
+}
+
+// ================= RAT =================
+const rat = {
+  x: 80,
+  y: 500,
+  w: 42,
+  h: 56,
+  vy: 0,
+  onGround: true,
+  rotation: 0,
+  trickCount: 0
+};
+const groundY = 560;
+
+// ================= INPUT (CHARGED JUMP + TRICKS) =================
+let charging = false;
+let chargeTime = 0;
+const maxCharge = 18;
+
+canvas.addEventListener("pointerdown", e => {
+  if (gameState === "menu") {
+    if (e.offsetX < canvas.width/2) {
+      save.hoodie = (save.hoodie + hoodies.length - 1) % hoodies.length;
+    } else {
+      save.board = (save.board + boards.length - 1) % boards.length;
+    }
+    localStorage.setItem("ratSave", JSON.stringify(save));
+    return;
+  }
+
+  if (gameState === "gameover") {
+    gameState = "menu";
+    music.pause();
+    return;
+  }
+
+  if (rat.onGround) {
+    charging = true;
+    chargeTime = 0;
+  } else {
+    rat.trickCount++;
+    rat.rotation += Math.PI / 2;
+    flow = Math.min(maxFlow, flow + 8);
+    score += 150 * flowMult;
+    sound(700 + rat.trickCount * 120);
+    vibrate(25);
+  }
+});
+
+canvas.addEventListener("pointerup", () => {
+  if (charging && rat.onGround && gameState === "play") {
+    rat.vy = -Math.min(6 + chargeTime * 0.6, 16);
+    rat.onGround = false;
+    charging = false;
+    rat.trickCount = 0;
+    sound(420);
+    vibrate(15);
+  }
+});
+
+canvas.addEventListener("dblclick", () => {
+  if (gameState === "menu") {
+    resetGame();
+    gameState = "play";
+    music.volume = 0.8;
+    music.play();
+  }
+});
+
+// ================= OBSTACLES & HEARTS =================
+let obstacles = [];
+let hearts = [];
+let spawnTimer = 0;
+
+// ================= RAIN =================
+let rainDrops = Array.from({length:80},()=>({
+  x:Math.random()*360,
+  y:Math.random()*640,
+  v:4+Math.random()*4
+}));
+
+// ================= UPDATE =================
+function update() {
+  if (gameState !== "play") return;
+
+  distance += speed;
+  flow = Math.max(0, flow - 0.05);
+  flowMult = 1 + Math.floor(flow / 25);
+
+  if (charging) chargeTime = Math.min(chargeTime + 1, maxCharge);
+
+  rat.vy += gravity;
+  rat.y += rat.vy;
+  rat.rotation *= 0.95;
+
+  if (rat.y + rat.h >= groundY) {
+    rat.y = groundY - rat.h;
+    rat.vy = 0;
+    rat.onGround = true;
+    rat.rotation = 0;
+  }
+
+  spawnTimer++;
+  if (spawnTimer > 90) {
+    obstacles.push({x:360,y:groundY-48,w:32,h:48});
+    if (Math.random()<0.5) hearts.push({x:360,y:groundY-120,r:10});
+    spawnTimer = 0;
+  }
+
+  obstacles.forEach(o=>o.x-=speed);
+  hearts.forEach(h=>h.x-=speed);
+  obstacles = obstacles.filter(o=>o.x>-60);
+  hearts = hearts.filter(h=>h.x>-60);
+
+  obstacles.forEach(o=>{
+    if (
+      rat.x < o.x+o.w &&
+      rat.x+rat.w > o.x &&
+      rat.y < o.y+o.h &&
+      rat.y+rat.h > o.y
+    ) {
+      gameState = "gameover";
+      flow = 0;
+      sound(120,0.3);
+      vibrate(200);
+      music.pause();
+    }
+  });
+
+  hearts.forEach(h=>{
+    const dx = rat.x+rat.w/2-(h.x+h.r);
+    const dy = rat.y+rat.h/2-(h.y+h.r);
+    if (Math.hypot(dx,dy)<h.r+12) {
+      h.x=-100;
+      flow = Math.min(maxFlow, flow + 20);
+      speed += 0.2;
+      sound(900);
+      vibrate(30);
+    }
+  });
+
+  score += flowMult;
+  speed += 0.0004;
+}
+
+// ================= DRAW CITY =================
+function drawCity() {
+  const t = currentTheme();
+  const g = ctx.createLinearGradient(0,0,0,640);
+  g.addColorStop(0,t.sky[0]);
+  g.addColorStop(1,t.sky[1]);
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,360,640);
+
+  ctx.fillStyle = t.city;
+  for(let i=0;i<10;i++){
+    const x=(i*90-distance*0.3)%900-90;
+    ctx.fillRect(x,240,70,240);
+    ctx.fillStyle=t.windows;
+    for(let y=260;y<420;y+=30){
+      ctx.fillRect(x+20,y,6,10);
+      ctx.fillRect(x+44,y,6,10);
+    }
+    ctx.fillStyle=t.city;
+  }
+
+  if(t.rain){
+    ctx.strokeStyle="#9ad9ff";
+    rainDrops.forEach(r=>{
+      ctx.beginPath();
+      ctx.moveTo(r.x,r.y);
+      ctx.lineTo(r.x,r.y+10);
+      ctx.stroke();
+      r.y+=r.v;
+      if(r.y>640){r.y=0;r.x=Math.random()*360;}
+    });
+  }
+
+  ctx.fillStyle="#222";
+  ctx.fillRect(0,groundY,360,80);
+}
+
+// ================= DRAW RAT =================
+function drawRat() {
+  ctx.save();
+  ctx.translate(rat.x+rat.w/2,rat.y+rat.h/2);
+  ctx.rotate(rat.rotation);
+
+  ctx.fillStyle = hoodies[save.hoodie];
+  ctx.fillRect(-10,6,20,28);
+
+  ctx.strokeStyle="#111";
+  ctx.lineWidth=4;
+  ctx.beginPath();
+  ctx.moveTo(-6,34);ctx.lineTo(-14,52);
+  ctx.moveTo(6,34);ctx.lineTo(14,52);
+  ctx.stroke();
+
+  ctx.strokeStyle="#555";
+  ctx.lineWidth=3;
+  ctx.beginPath();
+  ctx.moveTo(-10,16);ctx.lineTo(-18,rat.onGround?22:6);
+  ctx.moveTo(10,16);ctx.lineTo(18,rat.onGround?22:6);
+  ctx.stroke();
+
+  ctx.fillStyle="#888";
+  ctx.beginPath();
+  ctx.ellipse(0,-12,13,11,0,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.ellipse(12,-10,6,4,0,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(-8,-26,6,0,Math.PI*2);
+  ctx.arc(8,-26,6,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.fillStyle="#000";
+  ctx.beginPath();
+  ctx.arc(-4,-14,1.6,0,Math.PI*2);
+  ctx.arc(4,-14,1.6,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.restore();
+
+  ctx.fillStyle = boards[save.board];
+  ctx.fillRect(rat.x-4,rat.y+rat.h+6,60,6);
+}
+
+// ================= UI =================
+function drawUI() {
+  ctx.fillStyle="#fff";
+  ctx.font="16px Arial";
+  ctx.fillText("Score "+score,10,24);
+
+  ctx.fillStyle="#444";
+  ctx.fillRect(80,10,200,8);
+  ctx.fillStyle=flow>70?"#ff3b6f":"#6fd3ff";
+  ctx.fillRect(80,10,200*(flow/maxFlow),8);
+}
+
+// ================= DRAW =================
+function draw() {
+  ctx.clearRect(0,0,360,640);
+
+  if (gameState === "menu") {
+    drawCity();
+    drawRat();
+    ctx.fillStyle="#fff";
+    ctx.font="32px Arial";
+    ctx.fillText("RAT",140,180);
+    ctx.font="16px Arial";
+    ctx.fillText("Tap left/right to change style",40,230);
+    ctx.fillText("Double-tap to start",90,260);
+    return;
+  }
+
+  drawCity();
+
+  ctx.fillStyle="#6c2bd9";
+  obstacles.forEach(o=>ctx.fillRect(o.x,o.y,o.w,o.h));
+
+  ctx.fillStyle="#ff3b6f";
+  hearts.forEach(h=>{
+    ctx.beginPath();
+    ctx.arc(h.x+h.r,h.y+h.r,h.r,0,Math.PI*2);
+    ctx.fill();
+  });
+
+  drawRat();
+  drawUI();
+
+  if (gameState === "gameover") {
+    ctx.fillStyle="#fff";
+    ctx.fillText("RAT DOWN",120,300);
+    ctx.fillText("Tap to menu",120,340);
+  }
+}
+
+// ================= RESET =================
+function resetGame() {
+  score = 0;
+  distance = 0;
+  speed = 4;
+  flow = 0;
+  obstacles = [];
+  hearts = [];
+  rat.y = groundY - rat.h;
+  rat.vy = 0;
+  rat.onGround = true;
+  rat.rotation = 0;
+  gameOver = false;
+}
+
+// ================= LOOP =================
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+
+</body>
+</html>
